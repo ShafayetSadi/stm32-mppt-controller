@@ -1,455 +1,309 @@
-# STM32 MPPT Controller
+# STM32 Solar MPPT Charge Controller
 
-## System Specifications
+## System Specification
 
-### Solar PV Panel
+**Document status:** Preliminary design baseline  
+**Revision:** 0.1  
+**Date:** 2026-09-13
 
-| Parameter                            | Walton 100 W panel |
-| ------------------------------------ | -----------------: |
-| Maximum power, \(P_{max}\)           |          **100 W** |
-| Voltage at maximum power, \(V_{mp}\) |        **21.05 V** |
-| Current at maximum power, \(I_{mp}\) |         **4.75 A** |
-| Open-circuit voltage, \(V_{oc}\)     |        **24.48 V** |
-| Short-circuit current, \(I_{sc}\)    |         **5.17 A** |
-| Cell configuration                   | **36 cells (9×4)** |
-| Cell type                            |          Mono PERC |
-| Cell efficiency                      |                23% |
-| Temperature coefficient              |      **-0.34%/°C** |
-| Panel dimensions                     |  690 × 780 × 30 mm |
-| Weight                               |           ~5.97 kg |
-| Rated power tolerance                |                ±3% |
+## 1. Purpose and Scope
 
-### Battery
+This document specifies the Version 1 STM32-based solar MPPT charge controller for charging one 12 V, 18 Ah VRLA battery from one 100 W photovoltaic (PV) module.
 
-| Parameter                 |            Specification |
-| ------------------------- | -----------------------: |
-| Model                     |       **Walton WBU1218** |
-| Type                      |  VRLA / sealed lead-acid |
-| Nominal voltage           |                 **12 V** |
-| Capacity                  | **18 Ah @ 20-hour rate** |
-| Maximum charging current  |                **5.4 A** |
-| Cycle-use voltage         |   **14.4–15.0 V @ 25°C** |
-| Standby/float voltage     |   **13.5–14.8 V @ 25°C** |
-| Walton listed float range |          **14.3–14.8 V** |
-| Weight                    |                 ~5.25 kg |
+The controller shall use an asynchronous buck power stage, Perturb and Observe (P&O) MPPT, and three-stage battery charging (constant current, constant voltage, float). Hardware and firmware protection functions shall take priority over MPPT operation.
 
-### Power Converter
+Unless explicitly marked **Preliminary**, values in this document are design requirements. Preliminary values require schematic review, prototype measurement, and component-datasheet verification before release.
 
-| Parameter                         |     Design specification |
-| --------------------------------- | -----------------------: |
-| Converter topology                |       **Buck converter** |
-| Input source                      |                 Solar PV |
-| Nominal input                     |                    ~21 V |
-| Maximum expected PV voltage       |                  24.48 V |
-| Design input voltage              |             **~18–25 V** |
-| Recommended design voltage rating |                **≥30 V** |
-| Output                            |             12 V battery |
-| Maximum charging voltage          |     Initially **14.4 V** |
-| Maximum charging current          | **5.0 A software limit** |
-| Target output power               |   **~70–75 W practical** |
-| Power-stage design rating         |                **100 W** |
-| Target efficiency                 |                 **≥90%** |
+## 2. External Equipment
 
-- Maximum regulated battery charging power: ~72 W at 14.4 V and 5 A
+### 2.1 PV Module
 
-### Switching Stage
+| Parameter                               |                Specification |
+| --------------------------------------- | ---------------------------: |
+| Model                                   | Walton 100 W mono-PERC panel |
+| Rated maximum power                     |                        100 W |
+| Voltage at maximum power, \(V_{MP}\)    |                      21.05 V |
+| Current at maximum power, \(I_{MP}\)    |                       4.75 A |
+| Open-circuit voltage at STC, \(V_{OC}\) |                      24.48 V |
+| Short-circuit current, \(I_{SC}\)       |                       5.17 A |
 
-- Asynchronous buck converter
+### 2.2 Battery
 
-```text
-PV+
- │
- │
-MOSFET
- │
- ├──────── Inductor ──────── Battery+
- │
-Diode
- │
-GND
-```
+| Parameter                  |                                    Specification |
+| -------------------------- | -----------------------------------------------: |
+| Model                      |                                   Walton WBU1218 |
+| Chemistry                  |                          VRLA / sealed lead-acid |
+| Nominal voltage            |                                             12 V |
+| Capacity                   |                            18 Ah at 20-hour rate |
+| Maximum charging current   |                                            5.4 A |
+| Cycle-use voltage at 25 °C |                                      14.4–15.0 V |
+| Float/standby voltage      | Manufacturer data to be confirmed before release |
 
-### Switching Frequency
+## 3. Functional Requirements
 
-- initial switching frequency $f_{s} = 100 kHz$
+### 3.1 Power Conversion
 
-### PWM
+| Requirement                    |                                 Specification |
+| ------------------------------ | --------------------------------------------: |
+| Topology                       |                   Asynchronous buck converter |
+| Input source                   |        One PV module specified in Section 2.1 |
+| PV operating/design envelope   |                                    18–25 V DC |
+| Power-stage output envelope    |                                10.5–14.4 V DC |
+| Maximum charge current         |                       5.0 A, firmware-limited |
+| Maximum regulated charge power |                      72 W at 14.4 V and 5.0 A |
+| Power-stage capability         |                                   100 W class |
+| Switching frequency            |                          100 kHz, preliminary |
+| Target converter efficiency    |        ≥90% over the intended charging region |
+| Nominal operating point        | 21.05 V PV input, 14.4 V output, 5.0 A output |
 
-| Parameter                |                Target |
-| ------------------------ | --------------------: |
-| PWM frequency            | **100 kHz initially** |
-| PWM source               |           STM32 timer |
-| Duty-cycle control       |               Digital |
-| Duty-cycle range         |               ~0–100% |
-| Initial operating region |               ~50–80% |
+The PV and output ranges above are power-stage design envelopes, not absolute source or battery limits. In particular, 10.5 V represents a deeply discharged battery condition, not a normal charging target. Normal battery charging regulation is defined by the CC/CV/Float algorithm and battery requirements.
 
-### Measurement specifications
+The controller is not required to transfer the full 100 W panel rating to the battery. The 5.0 A charge-current limit caps battery charging power at 72 W at 14.4 V.
 
-| Measurement | Purpose                             |
-| ----------- | ----------------------------------- |
-| \(V_{PV}\)  | Determine PV operating voltage      |
-| \(I_{PV}\)  | Determine PV power                  |
-| \(V_{BAT}\) | Battery charging control            |
-| \(I_{BAT}\) | Current limiting / charging control |
-| Temperature | Optional protection                 |
+### 3.2 Control and Charging
 
-Then,
+1. The controller shall implement P&O MPPT using measured PV voltage and current.
+2. The controller shall implement CC → CV → Float charging.
+3. The CC current limit shall be 5.0 A.
+4. The initial CV target shall be 14.4 V at 25 °C.
+5. The float-voltage setpoint shall not be finalized until the applicable battery manufacturer requirement is confirmed.
+6. Under insufficient PV power, the controller shall use the available PV power without attempting to force the 5.0 A charge-current limit.
+7. Control priority shall be:
+   1. protection and fault handling;
+   2. battery charging limits;
+   3. MPPT control; and
+   4. PWM duty-cycle command.
 
-$$
-P_{PV} = V_{PV} \cdot I_{PV}
-$$
+### 3.3 PWM
 
-and,
+| Requirement                             |        Specification |
+| --------------------------------------- | -------------------: |
+| PWM source                              |          STM32 timer |
+| Nominal frequency                       |              100 kHz |
+| Nominal duty cycle at 21.05 V to 14.4 V |                68.4% |
+| Preliminary duty-cycle design envelope  | approximately 42–80% |
+| Sustained 100% duty                     |           Prohibited |
 
-$$
-P_{BAT} = V_{BAT} \cdot I_{BAT}
-$$
+The high-side bootstrap driver requires periodic switch-node transitions to refresh its bootstrap supply. Firmware shall impose a maximum duty cycle below 100% and preserve adequate off-time.
 
-### ADC Specifications
+## 4. Electrical Architecture
 
-| Parameter       |                             Target |
-| --------------- | ---------------------------------: |
-| MCU             |                  **STM32F103C8T6** |
-| ADC             |                 Internal STM32 ADC |
-| ADC resolution  |                         **12-bit** |
-| PV voltage      |                                ADC |
-| PV current      |                                ADC |
-| Battery voltage |                                ADC |
-| Battery current |                                ADC |
-| Reference       |                              3.3 V |
-| Sampling        | Periodic synchronized measurements |
-
-### MPPT Specifications
-
-- For version 1, Perturb & Observe algorithm.
-
-Conceptually:
+### 4.1 Power Path
 
 ```text
-Measure Vpv, Ipv
-       │
-       ▼
- Calculate P
-       │
-       ▼
-Compare with
-previous P
-       │
-┌──────┴──────┐
-▼             ▼
-P increased    P decreased
-│             │
-▼             ▼
-Continue         Reverse
-direction        direction
-│             │
-└──────┬──────┘
-       ▼
-  Update PWM
+PV+ → Input fuse → Reverse-polarity protection → TVS clamp → CIN
+    → Q1 high-side MOSFET → SW → L1 → BAT+
+
+System GND → D1 Schottky freewheel diode → SW
+
+BAT− → battery-current shunt → system return
+PV−  → PV-current shunt      → system return
 ```
 
-### Battery Charging Control
+Q1 is the only actively switched power device. D1 conducts naturally during Q1 off-time.
 
-- We will implement constant current (CC) + constant voltage (CV) charging control.
-
-So,
-
-$$
-CC \rightarrow CV \rightarrow Float
-$$
-
-**CC**
-Maximum charging current:
-
-$$
-I_{BAT} <= 5.0 A
-$$
-
-**CV**
-Target battery voltage:
-
-$$
-V_{BAT} = 14.4 V
-$$
-
-This is the lower end of Walton's 14.4–15.0 V cycle-use range. It is an initial
-engineering assumption.
-
-**Float**
-We'll eventually choose a value within the manufacturer's stated float/standby
-range, but we should label the exact value as our engineering implementation
-choice, because Walton hasn't given us enough information to claim a single
-exact recommended float setpoint.
-
-### Protection Specifications
-
-| Protection              | Initial target         |
-| ----------------------- | ---------------------- |
-| PV over-voltage         | Shutdown               |
-| PV over-current         | Shutdown/current limit |
-| Battery over-voltage    | Stop charging          |
-| Battery over-current    | Limit/shutdown         |
-| MOSFET over-temperature | Shutdown               |
-| Reverse battery         | Protection             |
-| Short circuit           | Current limit/shutdown |
-| Software fault          | Watchdog               |
-| Startup                 | Soft-start             |
-
-## Power Stage Design
-
-### Buck Topology
-
-$$
-100 W PV \rightarrow Buck Converter \rightarrow 12 V, 18 Ah Battery
-$$
-
-We will use a buck converter because our PV panel operates at a higher voltage
-than our battery, so we need to step it down to the battery voltage.
-
-Our asynchronous buck topology will be connected to the PV input and battery
-output as shown below.
+### 4.2 Control and Measurement Path
 
 ```text
-                         Q1
-                    ┌────┤
-                    │    │
-PV+ ────────┬───────┤    ├─────●────── L ────────┬─── BAT+
-            │       └────┘     │                 │
-            CIN                SW               COUT
-            │                  │                 │
-            │                  └───────|<|───────┤
-            │                           D1       │
-PV− ────────┴────────────────────────────────────┴─── BAT−
+STM32F103C8T6
+  ├─ PWM → LM5106 high-side gate driver → Q1
+  ├─ ADC ← PV voltage divider
+  ├─ ADC ← PV-current amplifier
+  ├─ ADC ← Battery voltage divider
+  ├─ ADC ← Battery-current amplifier
+  └─ ADC ← Optional power-stage NTC
 ```
 
-Where:
-
-- Q1 = main power MOSFET
-- D1 = freewheeling diode
-- L = output/energy-storage inductor
-- CIN = input capacitor
-- COUT = output capacitor
-- SW = switching node
-
-The battery is connected at the output.
-
-The STM32 controlls the power MOSFET and freewheeling diode to regulate the
-output voltage.
-
-$$
-D = \frac{T_{ON}}{T}
-$$
-
-Where:
-
-- $D$ = duty cycle
-- $T_{ON}$ = on-time
-- $T$ = period
-
-Ideal buck equation:
-
-$$
-V_{OUT} = D V_{IN}
-$$
-
-therefore:
-
-$$
-D = \frac{V_{OUT}}{V_{IN}}
-$$
-
-At the PV maximum-power point
-
-Our panel's nominal MPP is:
-
-$$ V_{IN}=V_{MP}=21.05V $$
-
-Our initial CV target is:
-
-$$ V_{OUT}=14.4V $$
-
-Therefore:
-
-$$ D=\frac{14.4}{21.05} $$ $$ \boxed{D\approx0.684} $$
-
-or:
-
-$$ \boxed{D\approx68.4\%} $$
-
-So when the PV is around its nominal MPP and the battery is at 14.4 V, our ideal
-buck would operate around 68% duty cycle.
-
-But the battery voltage is not exactly 14.4 V, so the actual duty cycle will be
-slightly different.
-
-### Our preliminary operating envelope
-
-| Parameter                        |    Design value |
-| -------------------------------- | --------------: |
-| PV nominal MPP voltage           |     **21.05 V** |
-| PV nominal MPP current           |      **4.75 A** |
-| PV STC open-circuit voltage      |     **24.48 V** |
-| Preliminary PV design range      |     **18–25 V** |
-| Battery nominal voltage          |        **12 V** |
-| Battery normal charging range    |  **~12–14.4 V** |
-| Deep-discharge design envelope   |     **~10.5 V** |
-| CV target                        |      **14.4 V** |
-| Maximum battery charging current |       **5.0 A** |
-| Converter design power           | **100 W class** |
-| Switching frequency              |     **100 kHz** |
-| Approx. duty at 21.05 → 12 V     |       **57.0%** |
-| Approx. duty at 21.05 → 14.4 V   |       **68.4%** |
-| Approx. maximum duty             |         **80%** |
-
-## Worst-Case Operating Conditions
-
-### Input Voltage Range
-
-The PV operating point changes continuously because of:
-
-- sunlight
-- temperature
-- MPPT operation
-- battery condition
-- converter losses
-
-Therefore, we will use a range of:
-
-$$
-V_{IN} = 18 - 25 V
-$$
-
-### Output Voltage Range
-
-Our battery is nominally 12 V, so the output voltage range will be:
-
-$$
-V_{OUT} = 10.5 - 14.4 V
-$$
-
-Where:
-
-- $10.5 V$ = conservative deep-discharge design point
-- $12-13.x V$ = normal battery operation range
-- $14.4 V$ = maximum battery charging voltage, our initial CV target
-
-Again, 10.5 V isn't a recommended battery operating voltage. It's a power-stage
-design envelope.
-
-### Duty-cycle range
-
-For an ideal buck:
-
-$$
-D = \frac{V_{OUT}}{V_{IN}}
-$$
-
-Minimum duty cycle,
-
-$$
-D_{min} = \frac{10.5}{25} \\
-D_{min} = 42%
-$$
-
-Maximum duty cycle,
-
-$$
-D_{max} = \frac{14.4}{25} \\
-D_{max} = 80%
-$$
-
-Therefore, the duty cycle range is $42%$ to $80%$.
-
-### Nominal Duty Cycle
-
-At the panel's MPP, V_in = 21.05 V and battery at CV, V_out = 14.4 V
-
-From the duty cycle equation,
-
-$$
-D = \frac{14.4}{21.05} \\
-D = 68.4 %
-$$
-
-So, our operating point is approximately,
-
-$$
-V_{IN} = 21.05 V \\
-V_{OUT} = 14.4 V \\
-D = 68.4 %
-$$
-
-### Output Current
-
-Our firmware limit is,
-
-$$
-I_{OUT,max} = 5 A
-$$
-
-So, the maximum battery charging power at 14.4V is,
-
-$$
-P_{OUT,max} = 14.4 \times 5 A = 72 W
-$$
-
-This is our controlled battery power.
-
-### Input Current
-
-The buck converter doesn't create energy. Ignoring losses,
-
-$$
-P_{IN} = P_{OUT} \\
-V_{IN}I_{IN} = V_{OUT}I_{OUT} \\
-I_{IN} = \frac{V_{OUT}}{V_{IN}}I_{OUT}
-$$
-
-So, we get,
-
-$$
-I_{IN} = \frac{14.4 x 5}{21.05} \\
-I_{IN} = 3.42 A
-$$
-
-But our panel can provide 4.75 A at MPP, but our battery is limited to 5 A, so
-we don't necessarily need to draw the entire 4.75 A at MPP.
-
-## Converter efficiency
-
-Let's assume, $\eta = 90%$, then,
-
-$$
-P_{OUT} = P_{IN} \eta \\
-P_{IN} = \frac{P_{OUT}}{\eta} \\
-P_{IN} = \frac{72 W}{0.9} \\
-P_{IN} = 80 W
-$$
-
-At 21.05 V,
-
-$$
-I_{IN} = \frac{80}{21.05} \\
-I_{IN} = 3.82 A
-$$
-
-### Components should handle more than 3.8 A
-
-The panel itself can supply $I_{SC} = 5.17A$ and potentially the converter can
-experience transient current spikes above its normal operating current.
-So, we need to select components accordingly.
-
-Input current capability, $ >= 6 A$
-Output current capability, $ >= 5 A$
-
-### Inductor Current
-
-## PWM Control Implementation
-
-## P&O MPPT Control Implementation
-
-## Battery Charging Control
-
-## Protections
-
-## Experimental Results
+The gate driver shall be disabled on a protection fault.
+
+## 5. Measurement Requirements
+
+### 5.1 MCU and ADC
+
+| Parameter         |                                      Specification |
+| ----------------- | -------------------------------------------------: |
+| MCU               |                                      STM32F103C8T6 |
+| ADC resolution    |                                             12 bit |
+| ADC reference     |                                              3.3 V |
+| Required channels |   \(V_{PV}\), \(I_{PV}\), \(V_{BAT}\), \(I_{BAT}\) |
+| Optional channel  |                            Power-stage temperature |
+| Sampling          | Periodic, synchronized with switching as practical |
+
+Firmware shall calculate:
+
+\[
+P_{PV}=V_{PV}I_{PV}
+\]
+
+\[
+P_{BAT}=V_{BAT}I_{BAT}
+\]
+
+\[
+\eta=\frac{P_{BAT}}{P_{PV}}\times100\%
+\]
+
+### 5.2 Voltage Measurement Baseline
+
+| Channel         | Divider       | Filter           | Input range | ADC voltage at maximum input |
+| --------------- | ------------- | ---------------- | ----------: | ---------------------------: |
+| PV voltage      | 91 kΩ / 12 kΩ | 100 nF to ground |      0–25 V |                       2.91 V |
+| Battery voltage | 56 kΩ / 15 kΩ | 100 nF to ground |      0–15 V |                       3.17 V |
+
+Divider resistors shall be 1% tolerance or better. Firmware shall support calibration using measured divider ratios and ADC-reference error.
+
+### 5.3 Current Measurement Baseline
+
+| Parameter            |                                  Specification |
+| -------------------- | ---------------------------------------------: |
+| Current-sense method |    Low-side shunt with current-sense amplifier |
+| Number of channels   |            Two: PV current and battery current |
+| Shunt resistance     |                        10 mΩ each, preliminary |
+| Shunt rating         |                                      ≥1 W each |
+| Amplifier            |             INA180A2, gain 50 V/V, preliminary |
+| Output scaling       | \(V_{ADC}=0.5I\) V; therefore \(I=2V_{ADC}\) A |
+| ADC filter           |      1 kΩ series resistor and 100 nF capacitor |
+
+At 5.0 A battery current, the nominal current-sense amplifier output is 2.5 V. The approximately 5.67 A inductor-current peak is used for Q1, D1, and L1 sizing; it is not directly equal to the battery current measured by the battery shunt. The output capacitor carries the inductor-current AC component.
+
+Both current shunts shall use Kelvin sense connections. The final PCB shall define a controlled star/return topology so shunt voltage drops do not corrupt voltage sensing or gate-driver ground references.
+
+## 6. Protection Requirements
+
+| Condition                   | Required response                       | Initial threshold / status                      |
+| --------------------------- | --------------------------------------- | ----------------------------------------------- |
+| PV input overvoltage        | Disable PWM and gate driver             | Threshold TBD during protection design          |
+| PV/input overcurrent        | Limit current or disable PWM            | Threshold TBD during protection design          |
+| Battery overvoltage         | Reduce or disable charging              | Threshold TBD during protection design          |
+| Battery overcurrent         | Reduce PWM; disable on persistent fault | >5.0 A                                          |
+| Output short circuit        | Fast current limit or shutdown          | Threshold and response time to be verified      |
+| Power-stage overtemperature | Derate, then shutdown                   | Derate at 70 °C; shutdown at 85 °C, preliminary |
+| Reverse PV connection       | Prevent damage                          | Hardware protection required                    |
+| Reverse battery connection  | Prevent damage                          | Hardware protection required                    |
+| MCU/software fault          | Disable switching safely                | Watchdog and fault-safe driver disable required |
+| Startup                     | Controlled duty ramp                    | Soft-start required                             |
+
+The 14.4 V CV target is a regulation setpoint, not an overvoltage-fault threshold. The battery overvoltage threshold shall be set above the CV target after battery limits, measurement error, ripple, control-loop overshoot, and protection margin are evaluated.
+
+The PV design envelope is not an overvoltage-protection threshold. The final PV overvoltage threshold shall account for cold-condition \(V_{OC}\), expected operating behavior, and available semiconductor/clamp margin.
+
+The input and battery fuses are backup protection; they shall not be used as normal current-control elements.
+
+## 7. Preliminary Power-Stage Design Baseline
+
+### 7.1 Calculated Operating Values
+
+| Item                                                             |                             Value |
+| ---------------------------------------------------------------- | --------------------------------: |
+| Maximum required input current at 72 W output and 90% efficiency |   approximately 3.82 A at 21.05 V |
+| Recommended input current capability                             |                              ≥6 A |
+| Inductor-ripple design target                                    |   1.5 A peak-to-peak (30% of 5 A) |
+| Worst evaluated ripple point                                     |           25 V input, 12 V output |
+| Calculated inductance at worst evaluated point                   |                           41.6 µH |
+| Selected preliminary inductance                                  |                             47 µH |
+| Ripple at 25 V input, 12 V output with 47 µH                     | approximately 1.33 A peak-to-peak |
+| Full-load inductor peak current                                  |              approximately 5.67 A |
+| Full-load inductor RMS current                                   |              approximately 5.02 A |
+
+The converter is expected to operate in continuous-conduction mode at full load.
+
+### 7.2 Preliminary Component Requirements
+
+| Reference                      | Baseline specification                                                                  | Status                |
+| ------------------------------ | --------------------------------------------------------------------------------------- | --------------------- |
+| Q1                             | STP55NF06, N-channel MOSFET, 60 V, TO-220, approximately 15 mΩ at 10 V gate drive       | Preliminary candidate |
+| D1                             | STPS10L60, 60 V, 10 A Schottky, TO-220AC                                                | Preliminary candidate |
+| L1                             | 47 µH shielded power inductor; ≥5 A RMS, ≥8 A saturation current, DCR preferably ≤30 mΩ | Exact part TBD        |
+| Gate driver                    | LM5106 high-side bootstrap driver                                                       | Preliminary candidate |
+| Gate resistor                  | 10 Ω                                                                                    | Tune on prototype     |
+| Gate-source resistor           | 10 kΩ                                                                                   | Preliminary           |
+| Bootstrap capacitor            | 100 nF X7R, 100 V preferred                                                             | Preliminary           |
+| Bootstrap diode                | Low-capacitance Schottky, 40–60 V minimum                                               | Exact part TBD        |
+| Input bulk capacitor           | 100 µF, 50 V, low ESR                                                                   | Preliminary           |
+| Input ceramic capacitors       | 2 × 10 µF, 50 V, X7R                                                                    | Preliminary           |
+| Input high-frequency capacitor | 100 nF, 50 V ceramic                                                                    | Preliminary           |
+| Output bulk capacitor          | 470 µF, 25 V, low ESR                                                                   | Preliminary           |
+| Output ceramic capacitors      | 2 × 22 µF, 25 V, X7R                                                                    | Preliminary           |
+| PV current shunt               | 10 mΩ, ≥1 W                                                                             | Preliminary           |
+| Battery current shunt          | 10 mΩ, ≥1 W                                                                             | Preliminary           |
+| Current-sense amplifiers       | 2 × INA180A2                                                                            | Preliminary           |
+| Temperature sensor             | 10 kΩ NTC near Q1/D1                                                                    | Preliminary           |
+| PV fuse                        | 6 A or 6.3 A                                                                            | Preliminary           |
+| Battery fuse                   | 7.5 A                                                                                   | Preliminary           |
+
+### 7.3 Auxiliary Supplies
+
+| Rail  | Load                     | Requirement                                  |
+| ----- | ------------------------ | -------------------------------------------- |
+| 10 V  | LM5106 gate driver       | Regulated from PV input; exact regulator TBD |
+| 3.3 V | STM32 and analog sensing | Regulated supply; exact regulator TBD        |
+
+A resistor divider shall not be used to power the gate driver. The selected regulators shall tolerate the PV input range and expected transients.
+
+## 8. PCB and Layout Requirements
+
+1. The `CIN–Q1–D1` high-\(di/dt\) loop shall be as small as practical.
+2. Input ceramic capacitors shall be placed adjacent to the Q1/D1 power loop.
+3. The SW-node copper area shall be minimized to reduce ringing and EMI.
+4. Output capacitors shall be placed close to L1 and the output return path.
+5. Current-shunt sense traces shall be Kelvin-routed and kept away from the SW node.
+6. Analog sensing ground, gate-driver ground, and high-current returns shall join at a defined low-impedance reference point.
+7. Q1 and D1 shall have sufficient copper area for heat spreading. The D1 footprint shall support an optional heatsink.
+
+## 9. Preliminary Performance and Thermal Targets
+
+| Operating point          | Estimated converter loss | Estimated efficiency | Status                   |
+| ------------------------ | -----------------------: | -------------------: | ------------------------ |
+| 21.05 V to 14.4 V at 5 A |                2.8–3.4 W | approximately 94–96% | Analytical estimate only |
+| 25 V to 12 V at 5 A      |                3.5–4.5 W |    approximately 93% | Analytical estimate only |
+
+At the nominal operating point, estimated losses are approximately 0.8 W in Q1, 0.77 W in D1, 0.5–0.76 W in L1 copper loss for 20–30 mΩ DCR, and 0.39 W in the two shunts combined.
+
+These estimates exclude or simplify several layout-dependent effects, including switch-node ringing, actual semiconductor switching transitions, auxiliary-rail losses, capacitor ESR, and thermal-interface performance. Prototype measurements are required before claiming compliance with the efficiency or temperature targets.
+
+## 10. Verification Requirements
+
+The design shall not be released for procurement or field use until the following are verified. Semiconductor voltage stress is a critical prototype measurement because 60 V ratings do not represent 60 V of usable operating margin; switching-node ringing and TVS clamp behavior must be included.
+
+| Verification item            | Acceptance criterion                                                                               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| PV input voltage margin      | Confirm cold-condition \(V_{OC}\), cable effects, and transient clamp margin                       |
+| Semiconductor voltage stress | Measured Q1 and D1 voltage remains below derated device limits with ringing included               |
+| Inductor                     | Verified saturation current, DCR, core loss, and temperature rise at maximum load                  |
+| Gate drive                   | Correct gate voltage, bootstrap refresh, rise/fall times, and no false turn-on                     |
+| Current sensing              | Calibrated readings and no ADC clipping over the required current range                            |
+| Voltage sensing              | Calibrated readings and no ADC clipping at maximum voltage                                         |
+| Battery charging             | CC, CV, float behavior, and temperature compensation policy verified against battery documentation |
+| Fault handling               | Each protection condition disables or limits switching safely                                      |
+| Thermal                      | Q1, D1, L1, shunts, and capacitors remain within rated temperature limits                          |
+| Efficiency                   | ≥90% across representative PV and battery operating points                                         |
+| EMI and layout               | Switching-node ringing and conducted/radiated noise assessed on the prototype                      |
+
+## 11. Open Items
+
+1. Confirm battery float-voltage specification and charging temperature-compensation requirements.
+2. Determine maximum PV open-circuit voltage over the intended ambient-temperature range. The 25 V input limit is based on STC panel data and is not yet a verified absolute maximum.
+3. Select the final input TVS device and verify that its clamp voltage protects 60 V Q1 and D1 ratings under transient conditions.
+4. Select and validate the reverse-polarity MOSFET circuit.
+5. Select exact 10 V and 3.3 V regulators.
+6. Select exact inductor, capacitors, bootstrap diode, and fuse part numbers after availability and thermal review.
+7. Verify INA180A2 bandwidth, input filtering, offset, gain accuracy, and transient behavior for the final sensing implementation.
+8. Define the final hardware fault thresholds, filtering, hysteresis, and recovery behavior.
+9. Measure switching waveforms and tune the gate resistor as needed.
+
+## 12. Recommended Verification Equipment
+
+| Measurement                   | Recommended equipment                                                   |
+| ----------------------------- | ----------------------------------------------------------------------- |
+| PV and battery voltage        | Calibrated digital multimeter                                           |
+| PV and battery current        | Digital multimeter, current probe, or shunt measurement                 |
+| Gate waveform and PWM         | Oscilloscope with appropriate probe                                     |
+| Switching-node waveform       | Oscilloscope with appropriately rated probe and short ground connection |
+| Ripple and transient response | Oscilloscope                                                            |
+| Temperature                   | Thermocouples, temperature logger, or IR camera                         |
+| Efficiency                    | Calibrated voltage/current meters or power analyzer                     |
+| MPPT performance              | Controlled illumination or repeatable variable-PV test conditions       |
+
+## 13. Change Control
+
+Any change to the PV module, battery type, maximum charging current, switching frequency, power topology, or semiconductor voltage rating requires review of the control limits, component stress, protection thresholds, thermal design, and verification plan.
